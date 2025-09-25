@@ -1,0 +1,2144 @@
+ #region Labyrinth
+    public static async Task OnCS_LabyrinthLobbyEnter(UserSession session, FlatMessage message)
+    {
+        var req = message.MessageAs<CS_LabyrinthLobbyEnter>();
+        if (req.ByteBuffer == null)
+        {
+            SessionManager.Kick(session, EResultType.HackSuspicion);
+            return;
+        }
+
+        DateTime now = ServerTime.Now;
+        long labyrinthSessionKey = 0;
+        bool isResetSeason = false;
+        bool isSelectCharacter = false;
+        int entryCount = 0;
+        int weeklyPoint = 0;
+        EResultType result = EResultType.Success;
+
+        try
+        {
+            do
+            {
+                using var connectionWrapper = await DatabaseManager.Instance.GetDisposableConnectionAsync(EDatabaseType.Game);
+                var connection = connectionWrapper.Value;
+
+                var refreshLabyrintInfo = await GameServer.Contents.Common.LabyrinthCommon.RefreshLabyrint(connection, session, now, true, false);
+                if (refreshLabyrintInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthLobbyEnter RefreshLabyrint Null UserIdx : {session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthLobbyEnterRefreshLabyrintFailed;
+                    break;
+                }
+
+                var getUserLabyrintInfo = session.Actor.LabyrinthModel.GetUserLabyrinth();
+                if (getUserLabyrintInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthLobbyEnter getUserLabyrintInfo Null UserIdx : {session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+
+                if (refreshLabyrintInfo.isNewbie == true)
+                {
+                    var getUser = session.Actor.UserModel.GetUser();
+                    Archive.Send(Archive.LogItemId.LabyrinthNewBie, getUser.countryCode, 0);
+                }
+
+                var characterCount = session.Actor.LabyrinthCharacterModel.GetCharacterCount();
+                if (characterCount > 0)
+                {
+                    isSelectCharacter = true;
+                }
+
+                labyrinthSessionKey = refreshLabyrintInfo.labyrinthSessionKey;
+                isResetSeason = refreshLabyrintInfo.isResetSeason;
+                entryCount = getUserLabyrintInfo.entryCount;
+                weeklyPoint = getUserLabyrintInfo.weeklyPoint;
+            }
+            while (false);
+        }
+        catch (Exception ex)
+        {
+            Logger.ErrorLog(ex);
+            result = EResultType.LogicError;
+        }
+
+        var builder = new FlatBufferBuilder(1);
+        var vectorOffset = SC_LabyrinthLobbyEnter.CreateSC_LabyrinthLobbyEnter(builder, labyrinthSessionKey, isResetSeason, entryCount, isSelectCharacter, weeklyPoint);
+        session.Send(builder, EMessageType.SC_LabyrinthLobbyEnter, vectorOffset, result);
+    }
+
+    public static async Task OnCS_LabyrinthTryEnter(UserSession session, FlatMessage message)
+    {
+        var req = message.MessageAs<CS_LabyrinthTryEnter>();
+        if (req.ByteBuffer == null)
+        {
+            SessionManager.Kick(session, EResultType.HackSuspicion);
+            return;
+        }
+        bool isSelectCharacter = false;
+        bool isResetSeason = false;
+        EResultType result = EResultType.Success;
+        DateTime now = ServerTime.Now;
+        try
+        {
+            do
+            {
+                using var connectionWrapper = await DatabaseManager.Instance.GetDisposableConnectionAsync(EDatabaseType.Game);
+                var connection = connectionWrapper.Value;
+
+                var refreshLabyrintInfo = await GameServer.Contents.Common.LabyrinthCommon.RefreshLabyrint(connection, session, now, false, false);
+                if (refreshLabyrintInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthTryEnter RefreshLabyrint Null UserIdx : {session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthTryEnterRefreshLabyrintFailed;
+                    break;
+                }
+
+                var labyrinthInfo = session.Actor.LabyrinthModel.GetUserLabyrinth();
+                if (labyrinthInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthLobbyEnter getUserLabyrintInfo Null UserIdx : {session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+
+                if (labyrinthInfo.floor <= 0)
+                {
+                    var checkEntry = UseEntryCount(session.Actor, now);
+                    if (checkEntry.resultType != EResultType.Success || checkEntry.isCheckEntry == false)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthTryEnter Entry Failed UserIdx : {session.Actor.UserModel.UserIndex}, UserEntryCount : {checkEntry.entryCount}");
+                        result = EResultType.NotEnoughEntryCount;
+                        break;
+                    }
+                }
+                isResetSeason = refreshLabyrintInfo.isResetSeason;
+
+                if (isResetSeason == false)
+                {
+                    var characterCount = session.Actor.LabyrinthCharacterModel.GetCharacterCount();
+                    if (characterCount > 0)
+                    {
+                        isSelectCharacter = true;
+                    }
+                }
+
+            }
+            while (false);
+        }
+        catch (Exception ex)
+        {
+            Logger.ErrorLog(ex);
+            result = EResultType.LogicError;
+        }
+
+        var builder = new FlatBufferBuilder(1);
+        var vectorOffset = SC_LabyrinthTryEnter.CreateSC_LabyrinthTryEnter(builder, isResetSeason, isSelectCharacter);
+        session.Send(builder, EMessageType.SC_LabyrinthTryEnter, vectorOffset, result);
+    }
+
+    public static async Task OnCS_LabyrinthSetCharacter(UserSession session, FlatMessage message)
+    {
+        var req = message.MessageAs<CS_LabyrinthSetCharacter>();
+        if (req.ByteBuffer == null)
+        {
+            SessionManager.Kick(session, EResultType.HackSuspicion);
+            return;
+        }
+        EResultType result = EResultType.Success;
+        DateTime now = ServerTime.Now;
+        try
+        {
+            do
+            {
+                var getMaxCharacterSlot = MetaData<TableGameConfigMeta>.Data.GetIntConf(MasterData.Types.ConfigType.Labyrinth_Use_Max_Character);
+                if (getMaxCharacterSlot <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSetCharacter Config Error UserIdx:{session.Actor.UserModel.UserIndex}, getMaxCharacterSlot : {getMaxCharacterSlot}");
+                    result = EResultType.MetaDataError;
+                    break;
+                }
+
+                if (req.CharListLength <= 0 || getMaxCharacterSlot < req.CharListLength)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSetCharacter Character List Error UserIdx:{session.Actor.UserModel.UserIndex}, characterListCount : {req.CharListLength}");
+                    result = EResultType.LabyrinthCharListCountError;
+                    break;
+                }
+
+                using var connectionWrapper = await DatabaseManager.Instance.GetDisposableConnectionAsync(EDatabaseType.Game);
+                var connection = connectionWrapper.Value;
+                var refreshLabyrintInfo = await GameServer.Contents.Common.LabyrinthCommon.RefreshLabyrint(connection, session, now, false, false);
+                if (refreshLabyrintInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSetCharacter RefreshLabyrint Null UserIdx : {session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthSetCharacterRefreshLabyrintFailed;
+                    break;
+                }
+                if (refreshLabyrintInfo.isResetSeason == true)
+                {
+                    result = EResultType.RequireLabyrinthReset;
+                    break;
+                }
+
+                var getLabyrintUserInfo = session.Actor.LabyrinthModel.GetUserLabyrinth();
+                if (getLabyrintUserInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSetCharacter LabyrinthInfo is Null  UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+
+                if (getLabyrintUserInfo.floor != 0 || getLabyrintUserInfo.nodeStage != 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSetCharacter Already Process Labyrint UserIdx:{session.Actor.UserModel.UserIndex}, Stage :{getLabyrintUserInfo.nodeStage} , Row :{getLabyrintUserInfo.currentRow}, Floor : {getLabyrintUserInfo.floor}");
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+
+                HashSet<long> containCharIdx = new HashSet<long>();
+                List<LabyrinthCharacter> labyrinthCharacters = new List<LabyrinthCharacter>();
+                List<CharaLog> characterLogDatas = new List<CharaLog>();
+                for (int i = 0; i < req.CharListLength; ++i)
+                {
+                    var charIdx = req.CharList(i);
+                    if (charIdx <= 0)
+                    {
+                        continue;
+                    }
+
+                    if (containCharIdx.Contains(charIdx) == true)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSetCharacter Duplication Character UserIdx:{session.Actor.UserModel.UserIndex}, CharIdx :{charIdx}");
+                        result = EResultType.DuplicationLabyrinthCharacterList;
+                        break;
+                    }
+
+                    var characterInfo = session.Actor.CharacterModel.GetCharactersInfo(charIdx);
+                    if (characterInfo == null)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSetCharacter Not Exsist Character UserIdx:{session.Actor.UserModel.UserIndex}, CharIdx :{charIdx}");
+                        result = EResultType.CharacterChooseFailed;
+                        break;
+                    }
+                    if ((int)characterInfo.grade < (int)Grade.Uncommon)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSetCharacter Uncommon Character UserIdx:{session.Actor.UserModel.UserIndex}, CharIdx :{charIdx}");
+                        result = EResultType.CharacterChooseFailed;
+                        break;
+                    }
+
+                    labyrinthCharacters.Add(new LabyrinthCharacter()
+                    {
+                        charIdx = charIdx,
+                        hpPercent = 10000,
+                        slotIndex = i,
+                        userIdx = session.Actor.UserModel.UserIndex,
+                        createTime = now,
+                        updateTime = now,
+                    });
+
+                    containCharIdx.Add(charIdx);
+
+                    characterLogDatas.Add(new CharaLog()
+                    {
+                        SlotIdx = i,
+                        CharIdx = charIdx,
+                    });
+                }
+
+                if (result != EResultType.Success)
+                {
+                    break;
+                }
+
+                if (labyrinthCharacters.Count <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSetCharacter Character CharIdx All Zero UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthCharListCountError;
+                    break;
+                }
+
+                int remainCount = getMaxCharacterSlot - labyrinthCharacters.Count;
+                if (remainCount > 0)
+                {
+                    int lastSlotIndex = labyrinthCharacters.Count;
+                    for (int i = 0; i < remainCount; ++i)
+                    {
+                        labyrinthCharacters.Add(new LabyrinthCharacter()
+                        {
+                            charIdx = 0,
+                            hpPercent = 0,
+                            slotIndex = lastSlotIndex + i,
+                            userIdx = session.Actor.UserModel.UserIndex,
+                            createTime = now,
+                            updateTime = now,
+                        });
+                    }
+                }
+
+                int affectd_cnt = await DBGameLabyrinthCharacterInfo.InsertOrUpdateLabyrinthCharacter(connection, labyrinthCharacters);
+                if (affectd_cnt <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSetCharacter InsertOrUpdateLabyrinthCharacter Character UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.DBUpdateError;
+                    break;
+                }
+
+                session.Actor.LabyrinthCharacterModel.SetLabyrinthCharacters(labyrinthCharacters);
+
+                long refrenceLogId = Uniquekey.Get();
+                await SqsModel.GetInstance().SendLog<LabyrinthCharacterLog>(new LabyrinthCharacterLog()
+                {
+                    UserIdx = session.Actor.UserModel.UserIndex,
+                    LogTime = now,
+                    ActionType = ActionType.LabyrinthSelectCharacter,
+                    LogType = LogType.LabyrinthCharacter,
+                    RefrenceLogId = refrenceLogId,
+                    CharacteLogDatas = characterLogDatas,
+                });
+
+            }
+            while (false);
+        }
+        catch (Exception ex)
+        {
+            Logger.ErrorLog(ex);
+            result = EResultType.LogicError;
+
+        }
+
+        var builder = new FlatBufferBuilder(1);
+        session.Send(builder, EMessageType.SC_LabyrinthSetCharacter, new Offset<SC_LabyrinthSetCharacter>(), result);
+    }
+
+
+
+    public static async Task OnCS_LabyrinthEnter(UserSession session, FlatMessage message)
+    {
+        var req = message.MessageAs<CS_LabyrinthEnter>();
+        if (req.ByteBuffer == null)
+        {
+            SessionManager.Kick(session, EResultType.HackSuspicion);
+            return;
+        }
+        DateTime now = ServerTime.Now;
+
+        var builder = new FlatBufferBuilder(1);
+        EResultType result = EResultType.Success;
+        VectorOffset nodeOffset = new VectorOffset();
+        VectorOffset characterOffset = new VectorOffset();
+        VectorOffset artifactOffset = new VectorOffset();
+        Offset<FlatMessages.ClientMessages.SC_LabyrinthEnter> messagePacketData = new Offset<SC_LabyrinthEnter>();
+        bool isCreateNode = false;
+        bool isNextFloor = false;
+        bool isSendLog = false;
+        long resultKeyItemCount = 0;
+        using var connectionWrapper = await DatabaseManager.Instance.GetDisposableConnectionAsync(EDatabaseType.Game);
+        var connection = connectionWrapper.Value;
+        connection.BeginTransaction();
+        try
+        {
+            do
+            {
+                bool isContentsOpen = ContentsOpenLogic.isOpenConetents(ContentsCategory.Labyrinth, 0, session.Actor);
+                if (isContentsOpen == false)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthEnter IsOpenConetents Not Open UserIdx :{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotOpenContents;
+                    break;
+                }
+
+                if (session.Actor.LabyrinthCharacterModel.GetCharacterCount() <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthEnter CharacterList Empty UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthEnterNotHaveCharacterListFailed;
+                    break;
+                }
+
+                var refreshLabyrintInfo = await GameServer.Contents.Common.LabyrinthCommon.RefreshLabyrint(connection, session, now, false, false);
+                if (refreshLabyrintInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthEnter refreshLabyrintInfo Empty UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthEnterRefreshLabyrintFailed;
+                    break;
+                }
+                if (refreshLabyrintInfo.isResetSeason == true)
+                {
+                    result = EResultType.RequireLabyrinthReset;
+                    break;
+                }
+
+                var getUserLabyrinth = session.Actor.LabyrinthModel.GetUserLabyrinth();
+                if (getUserLabyrinth == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthEnter getUserLabyrinth is Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+
+                List<LabyrinthNode> nodeDatas = null;
+                var serverSessionKey = session.Actor.LabyrinthModel.GetLabyrinthSessionKey();
+                var getUserLabyrinthFloorNode = session.Actor.LabyrinthNodeModel.GetCurrentFloorNode();
+                bool isResponseNode = req.LabyrinthsessionKey != serverSessionKey ? true : false;
+
+                LabyrintEntryInfo entryInfo = null;
+                if (getUserLabyrinth.floor == 0)
+                {
+                    entryInfo = UseEntryCount(session.Actor, now);
+                    if (entryInfo.resultType != EResultType.Success)
+                    {
+                        // 열쇠가 없고 0층이 아닐경우 진입 불가이기에 floor 0 체크
+                        Logger.ErrorLog($"OnCS_LabyrinthEnter Entry Failed UserIdx : {session.Actor.UserModel.UserIndex}, UserEntryCount : {entryInfo.entryCount}");
+                        result = entryInfo.resultType;
+                        break;
+                    }
+
+                    if (entryInfo.isCheckEntry == false)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthEnter Entry Failed UserIdx : {session.Actor.UserModel.UserIndex}, UserEntryCount : {entryInfo.entryCount}");
+                        result = EResultType.NotEnoughEntryCount;
+                        break;
+                    }
+
+                    if (entryInfo.useItem == null)
+                    {
+                        if (entryInfo.isResestDaily == true)
+                        {
+                            getUserLabyrinth.dailyRefreshTime = now;
+                            getUserLabyrinth.useCubeBatteryCount = 0;
+                        }
+                        isSendLog = true;
+                        getUserLabyrinth.entryCount = entryInfo.entryCount;
+                    }
+
+                    getUserLabyrinth.floor = 1;
+                    isCreateNode = true;
+
+                }
+                else
+                {
+                    if (getUserLabyrinthFloorNode != getUserLabyrinth.floor)
+                    {
+                        isNextFloor = true;
+                        isCreateNode = true;
+                    }
+                    else
+                    {
+                        if (isResponseNode == true)
+                        {
+                            var getUserNodeList = session.Actor.LabyrinthNodeModel.GetLabyrinthNodes();
+                            if (getUserNodeList != null && getUserNodeList.Count > 0)
+                            {
+                                nodeDatas = getUserNodeList.ToList();
+                            }
+                        }
+                    }
+                }
+
+                long refrenceLogId = Uniquekey.Get();
+                if (isCreateNode == true)
+                {
+                    nodeDatas = await GameServer.Contents.Common.LabyrinthCommon.CreateLabyrinthNode(connection, session.Actor.UserModel.UserIndex, getUserLabyrinth.floor, now);
+                    if (nodeDatas == null || nodeDatas.Count <= 0)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthEnter nodeDatas Null UserIdx : {session.Actor.UserModel.UserIndex}, Floor : {getUserLabyrinth.floor}");
+                        result = EResultType.LabyrinthEnterCreateLabyrinthNodeFailed;
+                        break;
+                    }
+
+                    await DBGameLabyrinthNodeInfo.ResetNode(connection, getUserLabyrinth.userIdx, now);
+                    int affectd_cnt = await DBGameLabyrinthNodeInfo.InsertOrUpdateLabyrinthNode(connection, nodeDatas);
+                    if (affectd_cnt <= 0)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthEnter DB Update Error LabyrinthNode UserIdx : {session.Actor.UserModel.UserIndex}");
+                        result = EResultType.LabyrinthEnterDBUpdateFailed;
+                        break;
+                    }
+
+                    affectd_cnt = await DBGameLabyrinthInfo.InsertOrUpdateLabyrinth(connection, getUserLabyrinth);
+                    if (affectd_cnt <= 0)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthEnter DB Update Error UpdateLabyrinth UserIdx : {session.Actor.UserModel.UserIndex}");
+                        result = EResultType.LabyrinthEnterDBUpdateFailed;
+                        break;
+                    }
+
+                    if (entryInfo != null && entryInfo.useItem != null && isNextFloor == false)
+                    {
+                        isSendLog = true;
+                        affectd_cnt = await DBGameItemInfo.UpdateItem(connection, entryInfo.useItem);
+                        if (affectd_cnt <= 0)
+                        {
+                            Logger.ErrorLog($"OnCS_LabyrinthEnter DB Update Error UpdateItem UserIdx : {session.Actor.UserModel.UserIndex}");
+                            result = EResultType.LabyrinthEnterDBUpdateFailed;
+                            break;
+                        }
+
+                        session.Actor.ItemModel.SetItem(entryInfo.useItem);
+                        await RankingMission.UpdateRankingItemMission(connection, session.Actor.UserModel.UserIndex, RankingConditionType.SpendItem, entryInfo.useItem.metaId, -entryInfo.useItem.count, now);
+                        Archive.Send(Archive.LogItemId.UseLabyrinthKey, session.Actor.UserModel.UserIndex, entryInfo.useItem.metaId, -entryInfo.useItem.count, 0, 0);
+                    }
+                    else if (entryInfo != null && entryInfo.useItem == null && isNextFloor == false)
+                    {
+                        Archive.Send(Archive.LogItemId.UseLabyrinthEnterCount, session.Actor.UserModel.UserIndex, 0, 0, 0, 0);
+                    }
+
+                    session.Actor.LabyrinthNodeModel.Clear();
+
+                    foreach (var nodeData in nodeDatas)
+                    {
+                        if (nodeData.state == NodeState.None)
+                        {
+                            continue;
+                        }
+                        session.Actor.LabyrinthNodeModel.SetNodeDate(nodeData);
+                    }
+
+                    session.Actor.LabyrinthNodeModel.SetCurrentFloorNode(getUserLabyrinth.floor);
+                    session.Actor.LabyrinthModel.SetUserLabyrinth(getUserLabyrinth);
+                }
+
+                var getKeyItemInfo = session.Actor.ItemModel.GetItem(GameShareDefine.LabyrinthKeyItem);
+                resultKeyItemCount = getKeyItemInfo != null ? getKeyItemInfo.count : 0;
+                if (isSendLog)
+                {
+                    await SqsModel.GetInstance().SendLog<LabyrinthEntryLog>(new LabyrinthEntryLog()
+                    {
+                        UserIdx = session.Actor.UserModel.UserIndex,
+                        LogTime = now,
+                        ActionType = ActionType.LabyrinthEnter,
+                        LogType = LogType.Labyrinth,
+                        RefrenceLogId = refrenceLogId,
+                        Floor = getUserLabyrinth.floor,
+                        UseEntryCount = entryInfo?.useItem != null ? 0 : -1,
+                        ResultEntryCount = getUserLabyrinth.entryCount,
+                        UseKeyItemCount = entryInfo?.useItem != null ? -1 : 0,
+                        ResultKeyItemCount = resultKeyItemCount,
+                    });
+                }
+                List<NodeLog> nodeLogDatas = new List<NodeLog>();
+                if (nodeDatas != null)
+                {
+                    var listCount = nodeDatas.Count();
+                    var nodeBuilder = new OffsetArrayBuilder<LabyrinthNodeData>(listCount);
+                    foreach (var node in nodeDatas)
+                    {
+                        if (node.state == NodeState.None)
+                        {
+                            continue;
+                        }
+                        nodeBuilder.Add(LabyrinthNodeData.CreateLabyrinthNodeData(builder
+                            , node.nodeStage, node.nodeRow, node.labyrinthMetaId
+                            , node.labyrinthFormationMetaId, node.startLinkRow, node.endLinkRow, (int)node.state));
+
+                        nodeLogDatas.Add(new NodeLog()
+                        {
+                            NodeStage = node.nodeStage,
+                            NodeRow = node.nodeRow,
+                            LabyrinthId = node.labyrinthMetaId,
+                            LabyrinthFormationId = node.labyrinthFormationMetaId,
+                            StartLinkRow = node.startLinkRow,
+                            EndLinkRow = node.endLinkRow,
+                        });
+                    }
+                    nodeOffset = SC_LabyrinthEnter.CreateLabyrinthNodeDataVector(builder, nodeBuilder.GetArray());
+                }
+
+                var getLabyrinthCharacterDatas = session.Actor.LabyrinthCharacterModel.GetLabyrinthCharacters();
+                if (getLabyrinthCharacterDatas != null && getLabyrinthCharacterDatas.Count > 0)
+                {
+                    var labyrinthCharacterDataArray = new OffsetArrayBuilder<LabyrinthCharData>(session.Actor.LabyrinthCharacterModel.GetCharacterCount());
+                    foreach (var getLabyrinthCharacterData in getLabyrinthCharacterDatas)
+                    {
+                        labyrinthCharacterDataArray.Add(LabyrinthCharData.CreateLabyrinthCharData(builder, getLabyrinthCharacterData.charIdx, getLabyrinthCharacterData.hpPercent));
+                    }
+                    characterOffset = SC_LabyrinthEnter.CreateLabyrinthCharDataVector(builder, labyrinthCharacterDataArray.GetArray());
+                }
+
+                var getUserArtifactInfos = session.Actor.LabyrinthArtifactModel.GetLabyrinthArtifacts();
+                if (getUserArtifactInfos != null && getUserArtifactInfos.Count > 0)
+                {
+                    var labyrinthArtifactDataArray = new OffsetArrayBuilder<LabyrintArtifactData>(getUserArtifactInfos.Count);
+                    foreach (var getUserArtifactInfo in getUserArtifactInfos)
+                    {
+                        labyrinthArtifactDataArray.Add(LabyrintArtifactData.CreateLabyrintArtifactData(builder, getUserArtifactInfo.slotIndex, getUserArtifactInfo.artifactMetaId));
+                    }
+                    artifactOffset = SC_LabyrinthEnter.CreateArtifactDatasVector(builder, labyrinthArtifactDataArray.GetArray());
+                }
+
+                messagePacketData = SC_LabyrinthEnter.CreateSC_LabyrinthEnter(builder, serverSessionKey, getUserLabyrinth.nodeStage, getUserLabyrinth.floor, getUserLabyrinth.currentRow, getUserLabyrinth.weeklyPoint, artifactOffset, nodeOffset, characterOffset, isCreateNode, getUserLabyrinth.totalBroochCount, getUserLabyrinth.entryCount, resultKeyItemCount);
+
+                connection.Commit();
+
+                if (isCreateNode == true)
+                {
+                    await SqsModel.GetInstance().SendLog<LabyrinthNewNodeLog>(new LabyrinthNewNodeLog()
+                    {
+                        UserIdx = session.Actor.UserModel.UserIndex,
+                        LogTime = now,
+                        ActionType = ActionType.LabyrinthNewode,
+                        LogType = LogType.LabyrinthNode,
+                        RefrenceLogId = refrenceLogId,
+                        Floor = getUserLabyrinth.floor,
+                        WeeklyPoint = getUserLabyrinth.weeklyPoint,
+                        TotalBroochCount = getUserLabyrinth.totalBroochCount,
+                        NodeLogDatas = nodeLogDatas,
+                    });
+                }
+            }
+            while (false);
+
+        }
+        catch (Exception ex)
+        {
+            result = EResultType.LogicError;
+            Logger.ErrorLog(ex);
+        }
+        if (result != EResultType.Success)
+        {
+            connection.Rollback();
+        }
+
+        session.Send(builder, EMessageType.SC_LabyrinthEnter, messagePacketData, result);
+    }
+
+    public static async Task OnCS_LabyrinthSelectNode(UserSession session, FlatMessage message)
+    {
+        using var connectionWrapper = await DatabaseManager.Instance.GetDisposableConnectionAsync(EDatabaseType.Game);
+        var connection = connectionWrapper.Value;
+        connection.BeginTransaction();
+        DateTime now = ServerTime.Now;
+        var req = message.MessageAs<CS_LabyrinthSelectNode>();
+        if (req.ByteBuffer == null)
+        {
+            SessionManager.Kick(session, EResultType.HackSuspicion);
+            return;
+        }
+        EResultType result = EResultType.Success;
+
+        var builder = new FlatBufferBuilder(1);
+        var vectorArtifactList = new VectorOffset();
+        var vectorMonsterList = new VectorOffset();
+        LabyrinthNode getUserNodeInfo = null;
+        PlayDataInfo playDataInfo = new PlayDataInfo();
+        List<MonsterLog> monsterLogs = new List<MonsterLog>();
+        List<ArtifactLog> artifactLogs = new List<ArtifactLog>();
+
+        try
+        {
+            do
+            {
+                var refreshLabyrintInfo = await GameServer.Contents.Common.LabyrinthCommon.RefreshLabyrint(connection, session, now, false, false);
+                if (refreshLabyrintInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSelectNode RefreshLabyrint Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthSelectNodeRefreshLabyrintFailed;
+                    break;
+                }
+                if (refreshLabyrintInfo.isResetSeason == true)
+                {
+                    result = EResultType.RequireLabyrinthReset;
+                    break;
+                }
+
+                var getDepthCount = MetaData<TableGameConfigMeta>.Data.GetIntConf(MasterData.Types.ConfigType.LABYRINTH_MAX_DEPTH);
+                if (getDepthCount <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSelectNode MaxDepth Error Count :{getDepthCount}");
+                    result = EResultType.RequireLabyrinthReset;
+                    break;
+                }
+
+                if (req.NodeStage <= 0 || req.NodeStage > getDepthCount)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSelectNode req.NodeStage  <= Zero UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.StageAndRowError;
+                    break;
+                }
+
+                var getUserLabyrinth = session.Actor.LabyrinthModel.GetUserLabyrinth();
+                if (getUserLabyrinth == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSelectNode getUserLabyrinth Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+                if (getUserLabyrinth.floor != req.Floor)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSelectNode req.Floor and user Floor Not Match UserIdx:{session.Actor.UserModel.UserIndex} req.Floor : {req.Floor}, User Floor : {getUserLabyrinth.floor}");
+                    result = EResultType.NotMatchFloor;
+                    break;
+                }
+
+                bool isDbUpdate = false;
+
+                int stage = req.NodeStage;
+                int row = req.Row;
+                if (getUserLabyrinth.nodeStage != 0)
+                {
+                    getUserNodeInfo = session.Actor.LabyrinthNodeModel.GetLabyrinthNode(getUserLabyrinth.nodeStage, getUserLabyrinth.currentRow);
+                    if (getUserNodeInfo == null)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSelectNode getUserNodeInfo Null UserIdx:{session.Actor.UserModel.UserIndex}, stage : {getUserLabyrinth.nodeStage}, Current Row : {getUserLabyrinth.currentRow}");
+                        result = EResultType.NotExsistNodeInfo;
+                        break;
+                    }
+
+                    bool isNext = false;
+                    if (getUserLabyrinth.nodeStage != stage)
+                    {
+                        if (getUserNodeInfo.state != NodeState.Complete)
+                        {
+                            result = EResultType.NotCompleteNode;
+                            break;
+                        }
+
+                        if (getUserLabyrinth.nodeStage + 1 != stage)
+                        {
+                            Logger.ErrorLog($"OnCS_LabyrinthSelectNode Not Next Stage UserIdx:{session.Actor.UserModel.UserIndex}, Next Node Stage : {getUserLabyrinth.nodeStage + 1}, req Node Stage : {stage}");
+                            result = EResultType.NotNextStage;
+                            break;
+                        }
+                        isNext = true;
+                    }
+                    else
+                    {
+                        if (getUserLabyrinth.currentRow != row)
+                        {
+                            Logger.ErrorLog($"OnCS_LabyrinthSelectNode Not Match Row UserIdx:{session.Actor.UserModel.UserIndex}, current Row : {getUserLabyrinth.currentRow}, req Row : {row}");
+                            result = EResultType.NotMatchRow;
+                            break;
+                        }
+                    }
+
+                    if (isNext == true)
+                    {
+                        if (getUserNodeInfo.startLinkRow <= row && getUserNodeInfo.endLinkRow >= row)
+                        {
+                            var getNextUserNodeInfo = session.Actor.LabyrinthNodeModel.GetLabyrinthNode(getUserLabyrinth.nodeStage + 1, row);
+                            if (getNextUserNodeInfo == null)
+                            {
+                                Logger.ErrorLog($"OnCS_LabyrinthSelectNode getNextUserNodeInfo Null UserIdx:{session.Actor.UserModel.UserIndex}, Node Stage : {getUserLabyrinth.nodeStage + 1}, Row : {row} ");
+                                result = EResultType.NotExsistNodeInfo;
+                                break;
+                            }
+
+                            var getLabyrintMetaInfo = MetaData<TableLabyrinthMeta>.Data.GetLabyrinthMeta(getNextUserNodeInfo.labyrinthMetaId);
+                            if (getLabyrintMetaInfo == null)
+                            {
+                                Logger.ErrorLog($"OnCS_LabyrinthSelectNode GetLabyrinthMeta Null UserIdx:{session.Actor.UserModel.UserIndex}, MetaId : {getNextUserNodeInfo.labyrinthMetaId}");
+                                result = EResultType.MetaDataError;
+                                break;
+                            }
+                            if (getLabyrintMetaInfo.NodeType == NodeType.Artifact)
+                            {
+                                playDataInfo = await LabyrinthCommon.GetNodePlayData(getLabyrintMetaInfo.NodeType, getLabyrintMetaInfo.RewardArtifactGroup);
+                            }
+                            else
+                            {
+                                playDataInfo = await LabyrinthCommon.GetNodePlayData(getLabyrintMetaInfo.NodeType, getNextUserNodeInfo.labyrinthFormationMetaId);
+                            }
+
+                            getUserNodeInfo = getNextUserNodeInfo;
+                        }
+                        else
+                        {
+                            Logger.ErrorLog($"OnCS_LabyrinthSelectNode Not Connect Select Node UserIdx:{session.Actor.UserModel.UserIndex}, start Lik Row : {getUserNodeInfo.startLinkRow}, End Link Row : {getUserNodeInfo.endLinkRow}, Row : {row}");
+                            result = EResultType.NotConnectSelectNodeError;
+                            break;
+                        }
+
+                        isDbUpdate = true;
+                    }
+                    else
+                    {
+                        if (getUserNodeInfo.state == NodeState.Complete)
+                        {
+                            Logger.ErrorLog($"OnCS_LabyrinthSelectNode Already Complete Node UserIdx:{session.Actor.UserModel.UserIndex}");
+                            result = EResultType.AlreadyCompleteNode;
+                            break;
+                        }
+
+                        var getLabyrintMetaInfo = MetaData<TableLabyrinthMeta>.Data.GetLabyrinthMeta(getUserNodeInfo.labyrinthMetaId);
+                        if (getLabyrintMetaInfo == null)
+                        {
+                            Logger.ErrorLog($"OnCS_LabyrinthSelectNode GetLabyrinthMeta Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                            result = EResultType.MetaDataError;
+                            break;
+                        }
+                        if (getLabyrintMetaInfo.NodeType == NodeType.Artifact)
+                        {
+                            playDataInfo.nodeArtifactDatas = session.Actor.LabyrinthNodeModel.GetNodeArtifactDatas(getUserNodeInfo.nodeStage, getUserNodeInfo.nodeRow);
+                            if (playDataInfo.nodeArtifactDatas == null)
+                            {
+                                Logger.ErrorLog($"OnCS_LabyrinthSelectNode GetNodeArtifactDatas Null UserIdx:{session.Actor.UserModel.UserIndex}, nodeStage : {getUserNodeInfo.nodeStage}, nodeRow : {getUserNodeInfo.nodeRow}");
+                                result = EResultType.LabyrinthGetNodeArtifactDatasNullFaild;
+                                break;
+                            }
+                        }
+                        else
+                        {
+                            if (getUserNodeInfo.state == NodeState.Reward)
+                            {
+                                playDataInfo.nodeArtifactDatas = session.Actor.LabyrinthNodeModel.GetNodeArtifactDatas(getUserNodeInfo.nodeStage, getUserNodeInfo.nodeRow);
+                                if (playDataInfo.nodeArtifactDatas == null)
+                                {
+                                    Logger.ErrorLog($"OnCS_LabyrinthSelectNode GetNodeArtifactDatas Null UserIdx:{session.Actor.UserModel.UserIndex}, nodeStage : {getUserNodeInfo.nodeStage}, nodeRow : {getUserNodeInfo.nodeRow}");
+                                    result = EResultType.LabyrinthGetNodeArtifactDatasNullFailed;
+                                    break;
+                                }
+                            }
+                            else
+                            {
+                                playDataInfo.nodeMonsterDatas = session.Actor.LabyrinthNodeModel.GetNodeMonsterDatas(getUserNodeInfo.nodeStage, getUserNodeInfo.nodeRow);
+                                if (playDataInfo.nodeMonsterDatas == null)
+                                {
+                                    Logger.ErrorLog($"OnCS_LabyrinthSelectNode GetNodeMonsterDatas Null UserIdx:{session.Actor.UserModel.UserIndex}, nodeStage : {getUserNodeInfo.nodeStage}, nodeRow : {getUserNodeInfo.nodeRow}");
+                                    result = EResultType.LabyrinthGetNodeMonsterDatasNullFailed;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    stage = 1;
+                    getUserNodeInfo = session.Actor.LabyrinthNodeModel.GetLabyrinthNode(stage, req.Row);
+                    if (getUserNodeInfo == null)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSelectNode getUserNodeInfo Null UserIdx:{session.Actor.UserModel.UserIndex}, Stage : {stage}, Row : {req.Row}");
+                        result = EResultType.NotExsistNodeInfo;
+                        break;
+                    }
+
+                    var getLabyrintMetaInfo = MetaData<TableLabyrinthMeta>.Data.GetLabyrinthMeta(getUserNodeInfo.labyrinthMetaId);
+                    if (getLabyrintMetaInfo == null)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSelectNode GetLabyrinthMeta Null UserIdx:{session.Actor.UserModel.UserIndex}, MetaId : {getUserNodeInfo.labyrinthMetaId}");
+                        result = EResultType.MetaDataError;
+                        break;
+                    }
+                    if (getLabyrintMetaInfo.NodeType == NodeType.Artifact)
+                    {
+                        playDataInfo = await LabyrinthCommon.GetNodePlayData(getLabyrintMetaInfo.NodeType, getLabyrintMetaInfo.RewardArtifactGroup);
+                    }
+                    else
+                    {
+                        playDataInfo = await LabyrinthCommon.GetNodePlayData(getLabyrintMetaInfo.NodeType, getUserNodeInfo.labyrinthFormationMetaId);
+                    }
+
+                    isDbUpdate = true;
+                }
+
+                if (isDbUpdate == true)
+                {
+                    string stringData = string.Empty;
+                    if (playDataInfo.nodeArtifactDatas != null && playDataInfo.nodeArtifactDatas.Count > 0)
+                    {
+                        getUserNodeInfo.state = NodeState.Reward;
+                        stringData = JsonConvert.SerializeObject(playDataInfo.nodeArtifactDatas);
+                    }
+                    else if (playDataInfo.nodeMonsterDatas != null && playDataInfo.nodeMonsterDatas.Count > 0)
+                    {
+                        stringData = JsonConvert.SerializeObject(playDataInfo.nodeMonsterDatas);
+                    }
+
+                    getUserNodeInfo.monsterData = stringData;
+
+                    var affectd_cnt = await DBGameLabyrinthNodeInfo.UpdateLabyrinthPlayData(connection, getUserNodeInfo.userIdx, getUserNodeInfo.nodeStage, getUserNodeInfo.nodeRow, getUserNodeInfo.state, getUserNodeInfo.monsterData);
+                    if (affectd_cnt <= 0)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSelectNode DB Update Failed LabyrinthPlayData UserIdx:{session.Actor.UserModel.UserIndex}");
+                        result = EResultType.DBUpdateError;
+                        break;
+                    }
+                    getUserLabyrinth.nodeStage = getUserNodeInfo.nodeStage;
+                    getUserLabyrinth.currentRow = getUserNodeInfo.nodeRow;
+
+                    affectd_cnt = await DBGameLabyrinthInfo.InsertOrUpdateLabyrinth(connection, getUserLabyrinth);
+                    if (affectd_cnt <= 0)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSelectNode DB Update Failed Labyrinth UserIdx:{session.Actor.UserModel.UserIndex}");
+                        result = EResultType.DBUpdateError;
+                        break;
+                    }
+                    session.Actor.LabyrinthModel.SetUserLabyrinth(getUserLabyrinth);
+
+                    session.Actor.LabyrinthNodeModel.SetNodeDate(getUserNodeInfo);
+                }
+
+                if (playDataInfo.nodeMonsterDatas != null && playDataInfo.nodeMonsterDatas.Count > 0)
+                {
+                    var array = new OffsetArrayBuilder<LabyrinthMonsterData>(playDataInfo.nodeMonsterDatas.Count);
+                    foreach (var nodeMonsterData in playDataInfo.nodeMonsterDatas)
+                    {
+                        var data = LabyrinthMonsterData.CreateLabyrinthMonsterData(builder, nodeMonsterData.creatureMetaId, nodeMonsterData.slotIdx, nodeMonsterData.hp, nodeMonsterData.level);
+                        array.Add(data);
+                        monsterLogs.Add(new MonsterLog()
+                        {
+                            SlotIdx = nodeMonsterData.slotIdx,
+                            CreatureId = nodeMonsterData.creatureMetaId,
+                            Hp = nodeMonsterData.hp,
+                            Level = nodeMonsterData.level,
+                        });
+                    }
+                    vectorMonsterList = SC_LabyrinthSelectNode.CreateLabyrinthMonsterDataVector(builder, array.GetArray());
+                }
+                else if (playDataInfo.nodeArtifactDatas != null && playDataInfo.nodeArtifactDatas.Count > 0)
+                {
+                    var array = new OffsetArrayBuilder<LabyrintArtifactData>(playDataInfo.nodeArtifactDatas.Count);
+                    foreach (var nodeArtifactData in playDataInfo.nodeArtifactDatas)
+                    {
+                        var data = LabyrintArtifactData.CreateLabyrintArtifactData(builder, nodeArtifactData.slotIdx, nodeArtifactData.artifactMetaId);
+                        array.Add(data);
+                        artifactLogs.Add(new ArtifactLog()
+                        {
+                            SlotIdx = nodeArtifactData.slotIdx,
+                            ArtifactId = nodeArtifactData.artifactMetaId,
+                        });
+                    }
+                    vectorArtifactList = SC_LabyrinthSelectNode.CreateArtifactMetaListVector(builder, array.GetArray());
+                }
+                connection.Commit();
+
+                if (isDbUpdate == true)
+                {
+                    long refrenceLogId = Uniquekey.Get();
+                    await SqsModel.GetInstance().SendLog<LabyrinthSelectLog>(new LabyrinthSelectLog()
+                    {
+                        UserIdx = session.Actor.UserModel.UserIndex,
+                        LogTime = now,
+                        ActionType = ActionType.LabyrinthSelctNode,
+                        LogType = LogType.LabyrinthNode,
+                        RefrenceLogId = refrenceLogId,
+                        Floor = getUserLabyrinth.floor,
+                        NodeStage = getUserLabyrinth.nodeStage,
+                        NodeRow = getUserLabyrinth.currentRow,
+                        LabyrinthId = getUserNodeInfo.labyrinthMetaId,
+                        LabyrinthFormationId = getUserNodeInfo.labyrinthFormationMetaId,
+                        MonsterDatas = monsterLogs,
+                        ArtifactDatas = artifactLogs,
+                    });
+                }
+
+            }
+            while (false);
+
+        }
+        catch (Exception ex)
+        {
+            Logger.ErrorLog(ex);
+            result = EResultType.LogicError;
+        }
+
+        if (result != EResultType.Success)
+        {
+            connection.Rollback();
+        }
+
+        var messagePacketData = SC_LabyrinthSelectNode.CreateSC_LabyrinthSelectNode(builder, vectorMonsterList, vectorArtifactList);
+        session.Send(builder, EMessageType.SC_LabyrinthSelectNode, messagePacketData, result);
+    }
+
+    public static async Task OnCS_LabyrinthSelectArtifact(UserSession session, FlatMessage message)
+    {
+
+        var req = message.MessageAs<CS_LabyrinthSelectArtifact>();
+        if (req.ByteBuffer == null)
+        {
+            SessionManager.Kick(session, EResultType.HackSuspicion);
+            return;
+        }
+        DateTime now = ServerTime.Now;
+        var builder = new FlatBufferBuilder(1);
+        VectorOffset rewardItemDatas = new VectorOffset();
+        EResultType result = EResultType.Success;
+        int slotIndex = 0;
+        int addWeeklyPoint = 0;
+        int addTotalBroochCount = 0;
+        int changeArtifactId = 0;
+        NodeState state = NodeState.Reward;
+        using var connectionWrapper = await DatabaseManager.Instance.GetDisposableConnectionAsync(EDatabaseType.Game);
+        var connection = connectionWrapper.Value;
+        connection.BeginTransaction();
+        try
+        {
+            do
+            {
+                var refreshLabyrintInfo = await GameServer.Contents.Common.LabyrinthCommon.RefreshLabyrint(connection, session, now, false, false);
+                if (refreshLabyrintInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact RefreshLabyrint Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthSelectArtifactRefreshLabyrintFailed;
+                    break;
+                }
+                if (refreshLabyrintInfo.isResetSeason == true)
+                {
+                    result = EResultType.RequireLabyrinthReset;
+                    break;
+                }
+
+                var getUserLabyrintInfo = session.Actor.LabyrinthModel.GetUserLabyrinth();
+                if (getUserLabyrintInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact GetUserLabyrinth Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+
+                var getUserLabyrintNodeInfo = session.Actor.LabyrinthNodeModel.GetLabyrinthNode(getUserLabyrintInfo.nodeStage, getUserLabyrintInfo.currentRow);
+                if (getUserLabyrintNodeInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact getUserLabyrintNodeInfo Null UserIdx:{session.Actor.UserModel.UserIndex}, nodeStage : {getUserLabyrintInfo.nodeStage}, current Row : {getUserLabyrintInfo.currentRow}");
+                    result = EResultType.NotExsistNodeInfo;
+                    break;
+                }
+
+                var getLabyrintMetaInfo = MetaData<TableLabyrinthMeta>.Data.GetLabyrinthMeta(getUserLabyrintNodeInfo.labyrinthMetaId);
+                if (getLabyrintMetaInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact GetLabyrinthMeta Null UserIdx:{session.Actor.UserModel.UserIndex}, MetaId : {getUserLabyrintNodeInfo.labyrinthMetaId}");
+                    result = EResultType.MetaDataError;
+                    break;
+                }
+
+                if (getLabyrintMetaInfo.NodeType != NodeType.Artifact)
+                {
+                    if (getUserLabyrintNodeInfo.state != NodeState.Reward)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact Node State is Not Reward UserIdx:{session.Actor.UserModel.UserIndex} , Node State : {getUserLabyrintNodeInfo.state} , stage : {getUserLabyrintNodeInfo.nodeStage}, Row :{getUserLabyrintNodeInfo.nodeRow}, metaId : {getUserLabyrintNodeInfo.labyrinthMetaId}");
+                        result = EResultType.NotArtifactRewardState;
+                        break;
+                    }
+                }
+                else
+                {
+                    if (getUserLabyrintNodeInfo.state == NodeState.Complete)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact Node State is Complete state UserIdx:{session.Actor.UserModel.UserIndex} , Node State : {getUserLabyrintNodeInfo.state} , stage : {getUserLabyrintNodeInfo.nodeStage}, Row :{getUserLabyrintNodeInfo.nodeRow}, metaId : {getUserLabyrintNodeInfo.labyrinthMetaId}");
+                        result = EResultType.LabyrinthSelectArtifactAlreadyCompleteFailed;
+                        break;
+                    }
+                }
+
+                var getMaxArtifactCount = MetaData<TableGameConfigMeta>.Data.GetIntConf(ConfigType.Labyrinth_Artifact_Max_Count);
+                if (getMaxArtifactCount <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact Config Error UserIdx:{session.Actor.UserModel.UserIndex}, getMaxArtifactCount : {getMaxArtifactCount}");
+                    result = EResultType.MetaDataError;
+                    break;
+                }
+                LabyrinthArtifact labyrinthArtifact = null;
+
+                if (req.SelectArtifactId != 0)
+                {
+                    var getArtifactList = session.Actor.LabyrinthNodeModel.GetNodeArtifactDatas(getUserLabyrintInfo.nodeStage, getUserLabyrintInfo.currentRow);
+                    if (getArtifactList == null || getArtifactList.Count <= 0)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact Not Exsist ArtifactList UserIdx:{session.Actor.UserModel.UserIndex}, Stage :{getUserLabyrintInfo.nodeStage} , Row :{getUserLabyrintInfo.currentRow} ,  ChangeSlotIdx : {req.ChangeSlotIdx}, SelectArtifact :{req.SelectArtifactId}");
+                        result = EResultType.LabyrinthSelectArtifactNotListFailed;
+                        break;
+                    }
+                    bool isArtifact = false;
+                    foreach (var getArtifact in getArtifactList)
+                    {
+                        if (getArtifact.artifactMetaId == req.SelectArtifactId)
+                        {
+                            isArtifact = true;
+                            break;
+                        }
+                    }
+
+                    if (isArtifact == false)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact Not Exsist ArtifactId UserIdx:{session.Actor.UserModel.UserIndex}, Stage :{getUserLabyrintInfo.nodeStage} , Row :{getUserLabyrintInfo.currentRow},  ChangeSlotIdx : {req.ChangeSlotIdx}, SelectArtifact :{req.SelectArtifactId}");
+                        result = EResultType.NotRewardArtifact;
+                        break;
+                    }
+
+                    bool isFullArtifact = false;
+                    var getAllUserArtifactList = session.Actor.LabyrinthArtifactModel.GetLabyrinthArtifacts();
+                    if (getAllUserArtifactList != null && getAllUserArtifactList.Count > 0)
+                    {
+                        var artifactCount = getAllUserArtifactList.Where(i => i.artifactMetaId != 0).Count();
+                        if (artifactCount >= getMaxArtifactCount)
+                        {
+                            isFullArtifact = true;
+                        }
+                        slotIndex = artifactCount;
+                    }
+
+                    if (isFullArtifact == true)
+                    {
+                        if (req.ChangeSlotIdx < 0 || req.ChangeSlotIdx > getMaxArtifactCount - 1)
+                        {
+                            Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact ChansgeSlotIdx Error UserIdx:{session.Actor.UserModel.UserIndex}, Stage :{getUserLabyrintInfo.nodeStage} , Row :{getUserLabyrintInfo.currentRow} , ChangeSlotIdx : {req.ChangeSlotIdx}");
+                            result = EResultType.LabyrinthSelectArtifactRequestFailed;
+                            break;
+                        }
+
+                        var slotArtifactInfo = session.Actor.LabyrinthArtifactModel.GetLabyrinthArtifact(req.ChangeSlotIdx);
+                        if (slotArtifactInfo == null)
+                        {
+                            Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact Not Exsist SlotIdx Error UserIdx:{session.Actor.UserModel.UserIndex}, Stage :{getUserLabyrintInfo.nodeStage} , Row :{getUserLabyrintInfo.currentRow} ,  ChangeSlotIdx : {req.ChangeSlotIdx}");
+                            result = EResultType.LabyrinthSelectArtifactRequestFailed;
+                            break;
+                        }
+                        if (slotArtifactInfo.artifactMetaId == 0)
+                        {
+                            Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact Not Exsist SlotIdx ArtifactId Error UserIdx:{session.Actor.UserModel.UserIndex}, Stage :{getUserLabyrintInfo.nodeStage} , Row :{getUserLabyrintInfo.currentRow} ,  ChangeSlotIdx : {req.ChangeSlotIdx}, ArtifactId: {slotArtifactInfo.artifactMetaId}");
+                            result = EResultType.LabyrinthSelectArtifactRequestFailed;
+                            break;
+                        }
+
+                        if (slotArtifactInfo.artifactMetaId == req.SelectArtifactId)
+                        {
+                            Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact ArtifactMetaId Same Error UserIdx:{session.Actor.UserModel.UserIndex}, Stage :{getUserLabyrintInfo.nodeStage} , Row :{getUserLabyrintInfo.currentRow} ,  ChangeSlotIdx : {req.ChangeSlotIdx}, ArtiafactmetaId : {slotArtifactInfo.artifactMetaId} , SelectArtifact :{req.SelectArtifactId}");
+                            result = EResultType.ChangeSameArtifact;
+                            break;
+                        }
+
+                        slotIndex = req.ChangeSlotIdx;
+                        changeArtifactId = slotArtifactInfo.artifactMetaId;
+                        slotArtifactInfo.artifactMetaId = req.SelectArtifactId;
+                        slotArtifactInfo.updateTime = now;
+                        labyrinthArtifact = slotArtifactInfo;
+
+                    }
+                    else
+                    {
+                        labyrinthArtifact = new LabyrinthArtifact()
+                        {
+                            userIdx = session.Actor.UserModel.UserIndex,
+                            artifactMetaId = req.SelectArtifactId,
+                            slotIndex = slotIndex,
+                            createTime = now,
+                            updateTime = now
+                        };
+                    }
+                }
+                LabyrintRewardInfo getRewardListInfo = null;
+                if (getLabyrintMetaInfo.NodeType == NodeType.Artifact)
+                {
+                    getRewardListInfo = LabyrinthCommon.GetLabyrintRewardList(getUserLabyrintInfo, getLabyrintMetaInfo);
+                    if (getRewardListInfo.result != EResultType.Success)
+                    {
+                        result = getRewardListInfo.result;
+                        break;
+                    }
+                    addWeeklyPoint = getRewardListInfo.addWeeklyPoint;
+                    addTotalBroochCount = getRewardListInfo.addTotalBroochCount;
+                    await session.Actor.MissionModel.UpdateCollection(connection, MasterData.Types.ClearType.LabyrinthArtifactNodeClearCount, 1);
+                    await session.Actor.MissionModel.UpdateCollection(connection, MasterData.Types.ClearType.LabyrinthNodeClearCount, 1);
+                }
+                getUserLabyrintNodeInfo.state = NodeState.Complete;
+
+                int affectd_cnt = 0;
+                if (labyrinthArtifact != null)
+                {
+                    affectd_cnt = await DBGameLabyrinthArtifact.InsertOrUpdateLabyrinthArtifact(connection, labyrinthArtifact);
+                    if (affectd_cnt <= 0)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact DB Update Error LabyrinthArtifact UserIdx:{session.Actor.UserModel.UserIndex}");
+                        result = EResultType.LabyrinthSelectArtifactDBUpdateFailed;
+                        break;
+                    }
+                }
+
+                affectd_cnt = await DBGameLabyrinthNodeInfo.UpdateLabyrinthPlayData(connection, session.Actor.UserModel.UserIndex, getUserLabyrintNodeInfo.nodeStage, getUserLabyrintNodeInfo.nodeRow, getUserLabyrintNodeInfo.state, getUserLabyrintNodeInfo.monsterData);
+                if (affectd_cnt <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact DB Update Error LabyrinthPlayData UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthSelectArtifactDBUpdateFailed;
+                    break;
+                }
+
+                if (getRewardListInfo != null)
+                {
+                    if (getRewardListInfo.rewardList != null && getRewardListInfo.rewardList.Count > 0)
+                    {
+                        affectd_cnt = await DBGameItemInfo.UpdateItems(connection, getRewardListInfo.rewardList);
+                        if (affectd_cnt <= 0)
+                        {
+                            Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact DB Update Error UpdateItems UserIdx:{session.Actor.UserModel.UserIndex}");
+                            result = EResultType.LabyrinthSelectArtifactDBUpdateFailed;
+                            break;
+                        }
+                    }
+                }
+
+                if (addWeeklyPoint > 0)
+                {
+                    affectd_cnt = await DBGameLabyrinthInfo.InsertOrUpdateLabyrinth(connection, getUserLabyrintInfo);
+                    if (affectd_cnt <= 0)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthSelectArtifact DB Update Error Labyrinth UserIdx:{session.Actor.UserModel.UserIndex}");
+                        result = EResultType.LabyrinthSelectArtifactDBUpdateFailed;
+                        break;
+                    }
+                    session.Actor.LabyrinthModel.SetUserLabyrinth(getUserLabyrintInfo);
+                }
+
+
+                if (labyrinthArtifact != null)
+                {
+                    session.Actor.LabyrinthArtifactModel.SetLabyrinthArtifact(labyrinthArtifact);
+                }
+
+                session.Actor.LabyrinthNodeModel.SetNodeDate(getUserLabyrintNodeInfo);
+                if (getRewardListInfo != null)
+                {
+                    if (getRewardListInfo.rewardList != null && getRewardListInfo.rewardList.Count > 0)
+                    {
+                        List<ItemDataLog> addItemLogs = new List<ItemDataLog>();
+                        var rewardDatas = new OffsetArrayBuilder<ItemData>(getRewardListInfo.rewardList.Count);
+                        foreach (var rewardItem in getRewardListInfo.rewardList)
+                        {
+                            session.Actor.ItemModel.SetItem(rewardItem);
+
+                            addItemLogs.Add(new ItemDataLog()
+                            {
+                                MetaId = rewardItem.metaId,
+                                AddCount = rewardItem.count,
+                                ResultCount = session.Actor.ItemModel.GetItem(rewardItem.metaId).count
+                            });
+
+                            var rewardData = ItemData.CreateItemData(builder, rewardItem.metaId, rewardItem.count);
+                            rewardDatas.Add(rewardData);
+
+                            await RankingMission.UpdateRankingItemMission(connection, session.Actor.UserModel.UserIndex, RankingConditionType.GetItem, rewardItem.metaId, rewardItem.count, now);
+                            Archive.Send(Archive.LogItemId.LabyrinthArtifactReward, session.Actor.UserModel.UserIndex, rewardItem.metaId, rewardItem.count, 0, 0);
+                        }
+                        rewardItemDatas = SC_LabyrinthSelectArtifact.CreateRewardItemsVector(builder, rewardDatas.GetArray());
+                        long refrenceLogId = Uniquekey.Get();
+
+                        await SqsModel.GetInstance().SendLog<ItemLog>(new ItemLog()
+                        {
+                            UserIdx = session.Actor.UserModel.UserIndex,
+                            LogTime = now,
+                            ActionType = ActionType.LabyrinthArtifact,
+                            LogType = LogType.Item,
+                            ItemLogDatas = addItemLogs,
+                            RefrenceLogId = refrenceLogId
+                        });
+                    }
+                }
+
+                if (req.SelectArtifactId != 0)
+                {
+                    long refrenceLogId = Uniquekey.Get();
+                    await SqsModel.GetInstance().SendLog<LabyrinthArtifactLog>(new LabyrinthArtifactLog()
+                    {
+                        UserIdx = session.Actor.UserModel.UserIndex,
+                        LogTime = now,
+                        ActionType = ActionType.LabyrinthSelectArtifact,
+                        LogType = LogType.LabyrinthArtifact,
+                        RefrenceLogId = refrenceLogId,
+                        Floor = getUserLabyrintInfo.floor,
+                        NodeStage = getUserLabyrintInfo.nodeStage,
+                        CurrentRow = getUserLabyrintInfo.currentRow,
+                        NodeType = (int)getLabyrintMetaInfo.NodeType,
+                        AddWeeklyPoint = addWeeklyPoint,
+                        ResultWeeklyPoint = getUserLabyrintInfo.weeklyPoint,
+                        AddTotalBroochCount = addTotalBroochCount,
+                        ResultTotalBroochCount = getUserLabyrintInfo.totalBroochCount,
+                        SlotIdx = slotIndex,
+                        ChangeArtifactId = changeArtifactId,
+                        SelectArtifactId = req.SelectArtifactId,
+                    });
+                }
+                state = getUserLabyrintNodeInfo.state;
+                connection.Commit();
+            }
+            while (false);
+        }
+        catch (Exception ex)
+        {
+            Logger.ErrorLog(ex);
+            result = EResultType.LogicError;
+        }
+        if (result != EResultType.Success)
+        {
+            connection.Rollback();
+        }
+
+        var vectorOffset = SC_LabyrinthSelectArtifact.CreateSC_LabyrinthSelectArtifact(builder, (int)state, rewardItemDatas, addWeeklyPoint);
+        session.Send(builder, EMessageType.SC_LabyrinthSelectArtifact, vectorOffset, result);
+    }
+
+    public static async Task OnCS_LabyrinthStart(UserSession session, FlatMessage message)
+    {
+        var req = message.MessageAs<CS_LabyrinthStart>();
+        if (req.ByteBuffer == null)
+        {
+            SessionManager.Kick(session, EResultType.HackSuspicion);
+            return;
+        }
+        DateTime now = ServerTime.Now;
+        EResultType result = EResultType.Success;
+        using var connectionWrapper = await DatabaseManager.Instance.GetDisposableConnectionAsync(EDatabaseType.Game);
+        var connection = connectionWrapper.Value;
+        connection.BeginTransaction();
+        int coolTime = 0;
+
+        try
+        {
+            do
+            {
+                var refreshLabyrintInfo = await GameServer.Contents.Common.LabyrinthCommon.RefreshLabyrint(connection, session, now, false, false);
+                if (refreshLabyrintInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthStart RefreshLabyrint Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthStartRefreshLabyrintFailed;
+                    break;
+                }
+                if (refreshLabyrintInfo.isResetSeason == true)
+                {
+                    result = EResultType.RequireLabyrinthReset;
+                    break;
+                }
+
+                var getCharacter = session.Actor.CharacterModel.GetCharacterClone(req.CharIdx);
+                if (getCharacter == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthStart GetLabyrinthNode Null UserIdx:{session.Actor.UserModel.UserIndex}, Character Idx : {req.CharIdx}");
+                    result = EResultType.LabyrinthStartNotCharacterFailed;
+                    break;
+                }
+
+                var isDeckCount = session.Actor.DeckPresetModel.CheckDeckCardCount(getCharacter.pveDeckNumber);
+                if (isDeckCount == false)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthStart CharDeckCount Failed UserIdx:{session.Actor.UserModel.UserIndex}, Character Idx : {req.CharIdx}");
+                    result = EResultType.LabyrinthStartDeckCountFailed;
+                    break;
+                }
+
+                var getLabyrintUser = session.Actor.LabyrinthModel.GetUserLabyrinth();
+                if (getLabyrintUser == null)
+                {
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+
+                var getLabyrintNode = session.Actor.LabyrinthNodeModel.GetLabyrinthNode(getLabyrintUser.nodeStage, getLabyrintUser.currentRow);
+                if (getLabyrintNode == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthStart GetLabyrinthNode Null UserIdx:{session.Actor.UserModel.UserIndex}, Node Stage : {getLabyrintUser.nodeStage}, Row : {getLabyrintUser.currentRow}");
+                    result = EResultType.NotExsistNodeInfo;
+                    break;
+                }
+                if (getLabyrintNode.state != NodeState.Idle)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthStart state is now Idle  Null UserIdx:{session.Actor.UserModel.UserIndex}, State : {getLabyrintNode.state}, Node Stage : {getLabyrintUser.nodeStage}, Row : {getLabyrintUser.currentRow}");
+                    result = EResultType.NotStartNodeState;
+                    break;
+                }
+                var getLabyrintMetaInfo = MetaData<TableLabyrinthMeta>.Data.GetLabyrinthMeta(getLabyrintNode.labyrinthMetaId);
+                if (getLabyrintMetaInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthStart GetLabyrinthMeta Date Error UserIdx:{session.Actor.UserModel.UserIndex}, MetaId : {getLabyrintNode.labyrinthMetaId}");
+                    result = EResultType.MetaDataError;
+                    break;
+                }
+                if (getLabyrintMetaInfo.NodeType == NodeType.Artifact)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthStart NodeType is Artifact Error UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotStartNodeType;
+                    break;
+                }
+
+                if (req.CharIdx <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthStart req Character Count Zero Error UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.RequestError;
+                    break;
+                }
+
+                var getLabyrintUserCharacter = session.Actor.LabyrinthCharacterModel.GetLabyrinthCharacter(req.CharIdx);
+                if (getLabyrintUserCharacter == null || getLabyrintUserCharacter.hpPercent <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthStart getLabyrintUserCharacter Null Error UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthStartCannotBattleCharacterFailed;
+                    break;
+                }
+
+                coolTime = await RedisUser.GetStageExpireTime(session.Actor.UserModel.UserIndex);
+                if (coolTime > 0)
+                {
+                    result = EResultType.StageCoolTime;
+                    break;
+                }
+
+                var checkCoolTime = getLabyrintMetaInfo.StageCoolTime / 10;
+                var timeSpan = now.AddMilliseconds(checkCoolTime) - now;
+                if (timeSpan <= TimeSpan.Zero)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthStart StageCoolTime Error UserIdx : {session.Actor.UserModel.UserIndex}, StageCoolTime : {getLabyrintMetaInfo.StageCoolTime}");
+                    result = EResultType.LabyrinthStartStageCoolTimeZeroFailed;
+                    break;
+                }
+
+                bool isSuccess = await RedisUser.SetStageEnterInfo(session.Actor.UserModel.UserIndex, new RedisUser.StageEnterInfo()
+                {
+                    charIdx = req.CharIdx,
+                    charHp = getLabyrintUserCharacter.hpPercent,
+                    enterTime = now,
+                    labyrinthMetaId = getLabyrintNode.labyrinthMetaId,
+                    labyrinthFormaionId = getLabyrintNode.labyrinthFormationMetaId,
+                }, timeSpan);
+
+                if (isSuccess == false)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthStart Redis Failed UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthStartRedisFailed;
+                    break;
+                }
+
+                session.Actor.LabyrinthModel.SetGameStart(true);
+                connection.Commit();
+            }
+            while (false);
+        }
+        catch (Exception ex)
+        {
+            Logger.ErrorLog(ex);
+
+        }
+        var builder = new FlatBufferBuilder(1);
+        var vectorOffset = SC_LabyrinthStart.CreateSC_LabyrinthStart(builder, coolTime);
+        session.Send(builder, EMessageType.SC_LabyrinthStart, vectorOffset, result);
+    }
+
+    public static async Task OnCS_LabyrinthBattleEnd(UserSession session, FlatMessage message)
+    {
+        var req = message.MessageAs<CS_LabyrinthBattleEnd>();
+        if (req.ByteBuffer == null)
+        {
+            SessionManager.Kick(session, EResultType.HackSuspicion);
+            return;
+        }
+        var builder = new FlatBufferBuilder(1);
+        VectorOffset rewardItemDatas = new VectorOffset();
+        DateTime now = ServerTime.Now;
+        int addWeeklyPoint = 0;
+
+        using var connectionWrapper = await DatabaseManager.Instance.GetDisposableConnectionAsync(EDatabaseType.Game);
+        var connection = connectionWrapper.Value;
+        connection.BeginTransaction();
+        EResultType result = EResultType.Success;
+        NodeState state = NodeState.Idle;
+        try
+        {
+            do
+            {
+                if (session.Actor.LabyrinthModel.GetGameStart() == false)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthBattleEnd GetGameStart = False UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.RequestError;
+                    break;
+
+                }
+
+                var refreshLabyrintInfo = await GameServer.Contents.Common.LabyrinthCommon.RefreshLabyrint(connection, session, now, false, false);
+                if (refreshLabyrintInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthBattleEnd RefreshLabyrint Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthBattleEndRefreshLabyrintFailed;
+                    break;
+                }
+                if (refreshLabyrintInfo.isResetSeason == true)
+                {
+                    result = EResultType.RequireLabyrinthReset;
+                    break;
+                }
+                var getLabyrintUser = session.Actor.LabyrinthModel.GetUserLabyrinth();
+                if (getLabyrintUser == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthBattleEnd getLabyrintUser Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+
+                var getLabyrintNode = session.Actor.LabyrinthNodeModel.GetLabyrinthNode(getLabyrintUser.nodeStage, getLabyrintUser.currentRow);
+                if (getLabyrintNode == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthBattleEnd getLabyrintNode Null UserIdx:{session.Actor.UserModel.UserIndex}, nodeStage : {getLabyrintUser.nodeStage}, current Row : {getLabyrintUser.currentRow}");
+                    result = EResultType.NotExsistNodeInfo;
+                    break;
+                }
+                if (getLabyrintNode.state != NodeState.Idle)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthBattleEnd Node State is Not Idle UserIdx:{session.Actor.UserModel.UserIndex} , Node State : {getLabyrintNode.state} , stage : {getLabyrintNode.nodeStage}, Row :{getLabyrintNode.nodeRow}, metaId : {getLabyrintNode.labyrinthMetaId}");
+                    result = EResultType.NotStartNodeState;
+                    break;
+                }
+                state = getLabyrintNode.state;
+
+                if (req.IsImmediatelyEnd == true || req.CharHp <= 0)
+                {
+                    var userStageInfo = await RedisUser.GetStageEnterInfo(session.Actor.UserModel.UserIndex);
+                    if (userStageInfo != null)
+                    {
+                        var isSuccess = await RedisUser.DeleteStageEnterInfo(session.Actor.UserModel.UserIndex);
+                        if (isSuccess == false)
+                        {
+                            // 정보를 가저오는 사이 삭제되었을 경우가 있을수있기에 로그만 남김
+                            Logger.ErrorLog($"OnCS_LabyrinthBattleEnd Redis Already Delete Failed UserIdx:{session.Actor.UserModel.UserIndex}");
+                        }
+                    }
+
+                    if (req.IsImmediatelyEnd == true)
+                    {
+                        break;
+                    }
+
+                    if (req.LabyrinthMonsterDatasLength <= 0 || req.CharIdx <= 0)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthBattleEnd req Error UserIdx:{session.Actor.UserModel.UserIndex}");
+                        result = EResultType.RequestError;
+                        break;
+                    }
+                }
+
+                //var getStageInfo = await RedisUser.GetStageEnterInfo(session.Actor.UserModel.UserIndex);
+                //if(getStageInfo == null)
+                //{
+                //    result = EResultType.NotStartStageInfo;
+                //    break;
+                //}
+                //if(getStageInfo.charIdx != req.CharIdx || getStageInfo.charHp < req.CharHp)
+                //{
+                //    result = EResultType.HakingCharacterData;
+                //    break;
+                //}
+
+                var getNodeMetaData = MetaData<TableLabyrinthMeta>.Data.GetLabyrinthMeta(getLabyrintNode.labyrinthMetaId);
+                if (getNodeMetaData == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthBattleEnd GetLabyrinthMeta Null UserIdx:{session.Actor.UserModel.UserIndex}, MetaId : {getLabyrintNode.labyrinthMetaId}");
+                    result = EResultType.MetaDataError;
+                    break;
+                }
+
+                if (getNodeMetaData.NodeType == NodeType.Artifact)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthBattleEnd NodeType is Artifact Error UserIdx:{session.Actor.UserModel.UserIndex}, Node Type : {getNodeMetaData.NodeType}");
+                    result = EResultType.NotStartNodeType;
+                    break;
+                }
+
+                var battleResult = await LabyrinthCommon.BattleResult(session.Actor, connection, getLabyrintUser, getNodeMetaData, req, now);
+                if (battleResult.result != EResultType.Success)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthBattleEnd NodeType BattleResult Error UserIdx:{session.Actor.UserModel.UserIndex}, state : {getLabyrintNode.state}, Eresult : {battleResult.result}");
+                    state = getLabyrintNode.state;
+                    result = battleResult.result;
+                    break;
+                }
+                if (battleResult.rewardItems.Count > 0)
+                {
+                    var rewardDatas = new OffsetArrayBuilder<ItemData>(battleResult.rewardItems.Count);
+                    foreach (var rewardItem in battleResult.rewardItems)
+                    {
+                        var rewardData = ItemData.CreateItemData(builder, rewardItem.metaId, rewardItem.count);
+                        rewardDatas.Add(rewardData);
+                    }
+                    rewardItemDatas = SC_LabyrinthBattleEnd.CreateRewardItemsVector(builder, rewardDatas.GetArray());
+                }
+                state = battleResult.state;
+                addWeeklyPoint = battleResult.addWeeklyPoint;
+
+                foreach (var data in battleResult.rewardItems)
+                {
+                    Archive.Send(Archive.LogItemId.LabyrinthBattleReward, session.Actor.UserModel.UserIndex, data.metaId, data.count, 0, 0);
+                }
+
+                session.Actor.LabyrinthModel.SetGameStart(false);
+
+                connection.Commit();
+
+            }
+            while (false);
+        }
+        catch (Exception ex)
+        {
+            Logger.ErrorLog(ex);
+            result = EResultType.LogicError;
+        }
+        if (result != EResultType.Success)
+        {
+            connection.Rollback();
+        }
+
+        var messagePacketData = SC_LabyrinthBattleEnd.CreateSC_LabyrinthBattleEnd(builder, (int)state, rewardItemDatas, addWeeklyPoint);
+        session.Send(builder, EMessageType.SC_LabyrinthBattleEnd, messagePacketData, result);
+    }
+
+    public static async Task OnCS_LabyrinthGiveUp(UserSession session, FlatMessage message)
+    {
+        var req = message.MessageAs<CS_LabyrinthGiveUp>();
+        if (req.ByteBuffer == null)
+        {
+            SessionManager.Kick(session, EResultType.HackSuspicion);
+            return;
+        }
+        DateTime now = ServerTime.Now;
+
+        using var connectionWrapper = await DatabaseManager.Instance.GetDisposableConnectionAsync(EDatabaseType.Game);
+        var connection = connectionWrapper.Value;
+        connection.BeginTransaction();
+        EResultType result = EResultType.Success;
+        try
+        {
+            do
+            {
+                var getUserLabyrinthInfo = session.Actor.LabyrinthModel.GetUserLabyrinth();
+                if (getUserLabyrinthInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthGiveUp getUserLabyrinthInfo Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+
+                if (getUserLabyrinthInfo.floor == 0 || (getUserLabyrinthInfo.nodeStage == 0 && getUserLabyrinthInfo.floor == 1))
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthGiveUp Not Give Up Condition UserIdx:{session.Actor.UserModel.UserIndex}, Floor : {getUserLabyrinthInfo.floor}, nodeStage : {getUserLabyrinthInfo.nodeStage}");
+                    result = EResultType.NotGiveUpCondition;
+                    break;
+                }
+
+                var refreshLabyrintInfo = await GameServer.Contents.Common.LabyrinthCommon.RefreshLabyrint(connection, session, now, true, true);
+                if (refreshLabyrintInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthGiveUp NRefreshLabyrint Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.MetaDataError;
+                    break;
+                }
+
+                if (refreshLabyrintInfo.isResetSeason == true)
+                {
+                    result = EResultType.RequireLabyrinthReset;
+                    break;
+                }
+
+                connection.Commit();
+            }
+            while (false);
+        }
+        catch (Exception ex)
+        {
+            Logger.ErrorLog(ex);
+            result = EResultType.LogicError;
+        }
+
+        if (result != EResultType.Success)
+        {
+            connection.Rollback();
+        }
+
+        var builder = new FlatBufferBuilder(1);
+        session.Send(builder, EMessageType.SC_LabyrinthGiveUp, new Offset<SC_LabyrinthGiveUp>(), result);
+    }
+
+    public static async Task OnCS_LabyrinthNextFloor(UserSession session, FlatMessage message)
+    {
+        var req = message.MessageAs<CS_LabyrinthNextFloor>();
+        if (req.ByteBuffer == null)
+        {
+            SessionManager.Kick(session, EResultType.HackSuspicion);
+            return;
+        }
+
+        var builder = new FlatBufferBuilder(1);
+        DateTime now = ServerTime.Now;
+        Offset<SC_LabyrinthNextFloor> messagePack = new Offset<SC_LabyrinthNextFloor>();
+        using var connectionWrapper = await DatabaseManager.Instance.GetDisposableConnectionAsync(EDatabaseType.Game);
+        var connection = connectionWrapper.Value;
+        EResultType result = EResultType.Success;
+        try
+        {
+            do
+            {
+                var refreshLabyrintInfo = await GameServer.Contents.Common.LabyrinthCommon.RefreshLabyrint(connection, session, now, false, false);
+                if (refreshLabyrintInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthNextFloor RefreshLabyrint Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.MetaDataError;
+                    break;
+                }
+                if (refreshLabyrintInfo.isResetSeason == true)
+                {
+                    result = EResultType.RequireLabyrinthReset;
+                    break;
+                }
+
+                var getUserLabyrinthInfo = session.Actor.LabyrinthModel.GetUserLabyrinth();
+                if (getUserLabyrinthInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthNextFloor getUserLabyrinthInfo Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+
+                if (getUserLabyrinthInfo.floor == 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthNextFloor Floor = 0 UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotMatchFloor;
+                    break;
+                }
+
+                var getLastNode = MetaData<TableGameConfigMeta>.Data.GetIntConf(MasterData.Types.ConfigType.LABYRINTH_MAX_DEPTH);
+                if (getLastNode <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthNextFloor getLastNode is Zero : {getLastNode}");
+                    result = EResultType.MetaDataError;
+                    break;
+                }
+
+                var getLastFloor = MetaData<TableLabyrinthMeta>.Data.GetLastFloor();
+                if (getUserLabyrinthInfo.floor >= getLastFloor)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthNextFloor getUserLabyrinthInfo is Last Floor: {getUserLabyrinthInfo.floor}");
+                    result = EResultType.LabyrinthLastFloor;
+                    break;
+                }
+
+                var getUserNodeList = session.Actor.LabyrinthNodeModel.GetLabyrinthNodes(getLastNode);
+                if (getUserNodeList == null || getUserNodeList.Count <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthNextFloor getUserNodeList Null Last Floor: {getUserLabyrinthInfo.floor}");
+                    result = EResultType.LabyrinthNextFloorNodeCheckFailed;
+                    break;
+                }
+                bool isStageClear = false;
+                foreach (var getUserNode in getUserNodeList)
+                {
+                    if (getUserNode.Value.state == NodeState.Complete)
+                    {
+                        isStageClear = true;
+                    }
+                }
+
+                if (isStageClear == false)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthNextFloor Not Complete Boss Node");
+                    result = EResultType.NotCompleteBossNode;
+                    break;
+                }
+
+                getUserLabyrinthInfo.floor += 1;
+                getUserLabyrinthInfo.nodeStage = 0;
+                getUserLabyrinthInfo.currentRow = 0;
+
+                var entryInfo = UseEntryCount(session.Actor, now);
+                if (entryInfo.resultType != EResultType.Success || entryInfo.isCheckEntry == false)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthNextFloor Entry Failed UserIdx : {session.Actor.UserModel.UserIndex}, UserEntryCount : {entryInfo.entryCount}");
+                    result = EResultType.NotEnoughEntryCount;
+                    break;
+                }
+
+                if (entryInfo.useItem == null)
+                {
+                    if (entryInfo.isResestDaily == true)
+                    {
+                        getUserLabyrinthInfo.dailyRefreshTime = now;
+                        getUserLabyrinthInfo.useCubeBatteryCount = 0;
+                    }
+                    getUserLabyrinthInfo.entryCount = entryInfo.entryCount;
+                }
+
+                int affectd_cnt = await DBGameLabyrinthInfo.InsertOrUpdateLabyrinth(connection, getUserLabyrinthInfo);
+                if (affectd_cnt <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthNextFloor DB Update Failed Labyrinth UserIdx : {session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthNextFloorDBUpdateFailed;
+                    break;
+                }
+
+                if (entryInfo.useItem != null)
+                {
+                    affectd_cnt = await DBGameItemInfo.UpdateItem(connection, entryInfo.useItem);
+                    if (affectd_cnt <= 0)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthNextFloor DB Update Failed Item UserIdx : {session.Actor.UserModel.UserIndex}");
+                        result = EResultType.LabyrinthNextFloorDBUpdateFailed;
+                        break;
+                    }
+
+                    session.Actor.ItemModel.SetItem(entryInfo.useItem);
+                    await RankingMission.UpdateRankingItemMission(connection, session.Actor.UserModel.UserIndex, RankingConditionType.SpendItem, entryInfo.useItem.metaId, -entryInfo.useItem.count, now);
+                    Archive.Send(Archive.LogItemId.UseLabyrinthKey, session.Actor.UserModel.UserIndex, entryInfo.useItem.metaId, -entryInfo.useItem.count, 0, 0);
+                }
+                else
+                {
+                    Archive.Send(Archive.LogItemId.UseLabyrinthEnterCount, session.Actor.UserModel.UserIndex, 0, 0, 0, 0);
+                }
+
+                session.Actor.LabyrinthModel.SetUserLabyrinth(getUserLabyrinthInfo);
+
+                messagePack = SC_LabyrinthNextFloor.CreateSC_LabyrinthNextFloor(builder, getUserLabyrinthInfo.entryCount);
+
+                long refrenceLogId = Uniquekey.Get();
+                var getItemInfo = session.Actor.ItemModel.GetItem(GameShareDefine.LabyrinthKeyItem);
+                await SqsModel.GetInstance().SendLog<LabyrinthEntryLog>(new LabyrinthEntryLog()
+                {
+                    UserIdx = session.Actor.UserModel.UserIndex,
+                    LogTime = now,
+                    ActionType = ActionType.LabyrinthEnter,
+                    LogType = LogType.Labyrinth,
+                    RefrenceLogId = refrenceLogId,
+                    Floor = getUserLabyrinthInfo.floor,
+                    UseEntryCount = entryInfo.useItem != null ? 0 : -1,
+                    ResultEntryCount = getUserLabyrinthInfo.entryCount,
+                    UseKeyItemCount = entryInfo.useItem != null ? -1 : 0,
+                    ResultKeyItemCount = getItemInfo != null ? getItemInfo.count : 0,
+                });
+            }
+            while (false);
+
+        }
+        catch (Exception ex)
+        {
+            Logger.ErrorLog(ex);
+            result = EResultType.LogicError;
+        }
+        session.Send(builder, EMessageType.SC_LabyrinthNextFloor, messagePack, result);
+    }
+
+    public static async Task OnCS_LabyrinthCubeEnter(UserSession session, FlatMessage message)
+    {
+        var builder = new FlatBufferBuilder(1);
+        Offset<SC_LabyrinthCubeEnter> messagePack = new Offset<SC_LabyrinthCubeEnter>();
+        EResultType result = EResultType.Success;
+        DateTime now = ServerTime.Now;
+        using var connectionWrapper = await DatabaseManager.Instance.GetDisposableConnectionAsync(EDatabaseType.Game);
+        var connection = connectionWrapper.Value;
+        try
+        {
+            do
+            {
+                var refreshLabyrinthInfo = await GameServer.Contents.Common.LabyrinthCommon.RefreshLabyrint(connection, session, now, false, false);
+                if (refreshLabyrinthInfo == null)
+                {
+                    Logger.ErrorLog($"CS_LabyrinthCubeEnter RefreshLabyrint Null UserIdx : {session.Actor.UserModel.UserIndex}");
+                    result = EResultType.LabyrinthCubeEnterRefreshLabyrintFailed;
+                    break;
+                }
+
+                if (refreshLabyrinthInfo.isResetSeason == true)
+                {
+                    result = EResultType.RequireLabyrinthReset;
+                    break;
+                }
+
+                var getUserLabyrinth = session.Actor.LabyrinthModel.GetUserLabyrinth();
+                if (getUserLabyrinth == null)
+                {
+                    Logger.ErrorLog($"CS_LabyrinthCubeEnter LabyrinthInfo is Null  UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+
+                var refreshEntryCount = false;
+                var getRefreshEnterCount = 0;
+                if (getUserLabyrinth.dailyRefreshTime.Date < now.Date)
+                {
+                    refreshEntryCount = true;
+                    getRefreshEnterCount = MetaData<TableGameConfigMeta>.Data.GetIntConf(MasterData.Types.ConfigType.Labyrinth_Daily_Reset_Count);
+                    if (getRefreshEnterCount <= 0)
+                    {
+                        Logger.ErrorLog($"CS_LabyrinthCubeEnter getRefreshEnterCount is Zero : {getRefreshEnterCount}");
+                        result = EResultType.LabyrinthCubeEnterGameConfigFailed;
+                        break;
+                    }
+                    getUserLabyrinth.dailyRefreshTime = now;
+                    getUserLabyrinth.entryCount = getRefreshEnterCount;
+                    getUserLabyrinth.useCubeBatteryCount = 0;
+
+                    var affectd_cnt = await DBGameLabyrinthInfo.InsertOrUpdateLabyrinth(connection, getUserLabyrinth);
+                    if (affectd_cnt <= 0)
+                    {
+                        Logger.ErrorLog($"CS_LabyrinthCubeEnter DB Update Error Labyrinth UserIdx:{session.Actor.UserModel.UserIndex}");
+                        result = EResultType.LabyrinthCubeEnterDBUpdateFailed;
+                        break;
+                    }
+                    session.Actor.LabyrinthModel.SetUserLabyrinth(getUserLabyrinth);
+                }
+                messagePack = SC_LabyrinthCubeEnter.CreateSC_LabyrinthCubeEnter(builder, getUserLabyrinth.useCubeBatteryCount);
+
+                if (refreshEntryCount == true)
+                {
+                    var newBuilder = new FlatBufferBuilder(1);
+                    var offsetMessage = SC_RefreshLabyrinthEntryCount.CreateSC_RefreshLabyrinthEntryCount(newBuilder, getRefreshEnterCount);
+                    session.Send(newBuilder, EMessageType.SC_RefreshLabyrinthEntryCount, offsetMessage, result);
+                }
+            } while (false);
+        }
+        catch (Exception ex)
+        {
+            Logger.ErrorLog(ex);
+            result = EResultType.LogicError;
+        }
+        session.Send(builder, EMessageType.SC_LabyrinthCubeEnter, messagePack, result);
+    }
+
+    public static async Task OnCS_LabyrinthOpenCube(UserSession session, FlatMessage message)
+    {
+        var req = message.MessageAs<CS_LabyrinthOpenCube>();
+        if (req.ByteBuffer == null)
+        {
+            SessionManager.Kick(session, EResultType.HackSuspicion);
+            return;
+        }
+
+        var builder = new FlatBufferBuilder(1);
+        DateTime now = ServerTime.Now;
+        Offset<SC_LabyrinthOpenCube> messagePack = new Offset<SC_LabyrinthOpenCube>();
+        using var connectionWrapper = await DatabaseManager.Instance.GetDisposableConnectionAsync(EDatabaseType.Game);
+        var connection = connectionWrapper.Value;
+        connection.BeginTransaction();
+        EResultType result = EResultType.Success;
+        try
+        {
+            do
+            {
+                var getUserLabyrinth = session.Actor.LabyrinthModel.GetUserLabyrinth();
+                if (getUserLabyrinth == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthOpenCube LabyrinthInfo is Null UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.NotExsistLabyrinthInfo;
+                    break;
+                }
+
+                var refreshLabyrinthInfo = await GameServer.Contents.Common.LabyrinthCommon.RefreshLabyrint(connection, session, now, false, false);
+                if (refreshLabyrinthInfo == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthOpenCube RefreshLabyrint Null UserIdx : {session.Actor.UserModel.UserIndex}");
+                    result = EResultType.OpenCubeRefreshLabyrintFailed;
+                    break;
+                }
+
+                if (refreshLabyrinthInfo.isResetSeason == true)
+                {
+                    result = EResultType.RequireLabyrinthReset;
+                    break;
+                }
+
+                var refreshEntryCount = false;
+                var getRefreshEnterCount = 0;
+                if (getUserLabyrinth.dailyRefreshTime.Date < now.Date)
+                {
+                    refreshEntryCount = true;
+                    getRefreshEnterCount = MetaData<TableGameConfigMeta>.Data.GetIntConf(MasterData.Types.ConfigType.Labyrinth_Daily_Reset_Count);
+                    if (getRefreshEnterCount <= 0)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthOpenCube getRefreshEnterCount is Zero : {getRefreshEnterCount}");
+                        result = EResultType.LabyrinthCubeEnterGameConfigFailed;
+                        break;
+                    }
+                    getUserLabyrinth.dailyRefreshTime = now;
+                    getUserLabyrinth.entryCount = getRefreshEnterCount;
+                    getUserLabyrinth.useCubeBatteryCount = 0;
+                }
+
+                List<Item> itemInfos = new List<Item>();
+                var getCurioBatteryId = MetaData<TableGameConfigMeta>.Data.GetIntConf(MasterData.Types.ConfigType.LabyrinthRandomBox_CurioBatteryId);
+                var getRewardId = MetaData<TableGameConfigMeta>.Data.GetIntConf(MasterData.Types.ConfigType.LabyrinthRandomBox_CurioId);
+                var getCurioBatteryDailyMaxCount = MetaData<TableGameConfigMeta>.Data.GetIntConf(MasterData.Types.ConfigType.LabyrinthRandomBox_CurioBatteryDailyMaxCount);
+                var getUseCount = MetaData<TableGameConfigMeta>.Data.GetIntConf(MasterData.Types.ConfigType.LabyrinthRandomBox_UseCount);
+                if (getCurioBatteryId <= 0 || getRewardId <= 0 || getCurioBatteryDailyMaxCount <= 0 || getUseCount <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthOpenCube Config Error UserIdx:{session.Actor.UserModel.UserIndex}");
+                    result = EResultType.OpenCubeGameConfigFailed;
+                    break;
+                }
+
+                if (req.UseCount > getUseCount || req.UseCount <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthOpenCube UseCount Over Limit Count or 0 <= req.Count | UseCount: {getUseCount} , req.UseCount :{req.UseCount}");
+                    result = EResultType.OpenCubeOverUseCountFailed;
+                    break;
+                }
+
+                if (getUserLabyrinth.useCubeBatteryCount + req.UseCount > getCurioBatteryDailyMaxCount)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthOpenCube UseCubeBatteryCount Over UserIdx:{session.Actor.UserModel.UserIndex}, req.UseCount : {req.UseCount}, DB UseCubeBatteryCount : {getUserLabyrinth.useCubeBatteryCount}");
+                    result = EResultType.OpenCubeDailyMaxCountFailed;
+                    break;
+                }
+
+                var isEnoughItem = session.Actor.ItemModel.IsEnoughCount(req.UseMetaId, req.UseCount);
+                if (isEnoughItem == false)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthOpenCube Need Item Error UserIdx:{session.Actor.UserModel.UserIndex}, ItemId : {req.UseMetaId}");
+                    result = EResultType.OpenCubeNeedItemFailed;
+                    break;
+                }
+
+                isEnoughItem = session.Actor.ItemModel.IsEnoughCount(getCurioBatteryId, req.UseCount);
+                if (isEnoughItem == false)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthOpenCube Need Item Error UserIdx:{session.Actor.UserModel.UserIndex}, ItemId : {req.UseMetaId}");
+                    result = EResultType.OpenCubeNeedItemFailed;
+                    break;
+                }
+
+                var getLabyrinthRandomBoxMeta = MetaData<TableLabyrinthRandomBoxMeta>.Data.GetLabyrinthRandomBoxMetaByItemId(req.UseMetaId);
+                if (getLabyrinthRandomBoxMeta == null)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthOpenCube getLabyrinthRandomBoxMeta Is Null MetaId : {req.UseMetaId}");
+                    result = EResultType.OpenCubeGetRandomBoxItemIdFailed;
+                    break;
+                }
+
+                var getLabyrinthRandomBoxGroup = MetaData<TableLabyrinthRandomBoxRewardMeta>.Data.GetLabyrinthRandomBoxRewardMetaByGroupId(getLabyrinthRandomBoxMeta.LabyrinthRandomBoxGroupId);
+                if (getLabyrinthRandomBoxGroup == null || getLabyrinthRandomBoxGroup.Count <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthOpenCube getLabyrinthRandomBoxGroup Is Null Or Count Zero MetaId : {getLabyrinthRandomBoxMeta.LabyrinthRandomBoxGroupId}");
+                    result = EResultType.OpenCubeGetRandomBoxRewardMetaFailed;
+                    break;
+                }
+
+                var getTotalProb = MetaData<TableLabyrinthRandomBoxRewardMeta>.Data.GetProb(getLabyrinthRandomBoxGroup);
+                if (getTotalProb <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthOpenCube getTotalProb Error MetaId : {getLabyrinthRandomBoxMeta.LabyrinthRandomBoxGroupId}");
+                    result = EResultType.OpenCubeGetProbFailed;
+                    break;
+                }
+
+                var rewardCount = 0;
+                for (int i = 0; i < req.UseCount; i++)
+                {
+                    var randomProb = RandomGenerator.GetRandomValue(0, getTotalProb + 1);
+                    var getLabyrinthRandomBoxRewardMeta = MetaData<TableLabyrinthRandomBoxRewardMeta>.Data.RandomLabyrinthRandomBoxRewardMeta(getLabyrinthRandomBoxGroup, randomProb);
+                    if (getLabyrinthRandomBoxRewardMeta == null)
+                    {
+                        Logger.ErrorLog($"OnCS_LabyrinthOpenCube getLabyrinthRandomBoxRewardMeta Null Error MetaId : {getLabyrinthRandomBoxMeta.LabyrinthRandomBoxGroupId}, Prob : {randomProb}");
+                        result = EResultType.OpenCubeGetRewardMetaFailed;
+                        break;
+                    }
+
+                    rewardCount += getLabyrinthRandomBoxRewardMeta.GetCurioRewardCount;
+                }
+
+                if (result != EResultType.Success)
+                {
+                    break;
+                }
+
+                getUserLabyrinth.useCubeBatteryCount += req.UseCount;
+
+                itemInfos.AddRange(new List<Item>
+                {
+                    new Item { userIdx = session.Actor.UserModel.UserIndex, metaId = getCurioBatteryId, count = -req.UseCount },
+                    new Item { userIdx = session.Actor.UserModel.UserIndex, metaId = req.UseMetaId, count = -req.UseCount },
+                    new Item { userIdx = session.Actor.UserModel.UserIndex, metaId = getRewardId, count = rewardCount }
+                });
+
+                if (getRewardId == GameShareDefine.Curio)
+                {
+                    await session.Actor.MissionModel.UpdateCollection(connection, MasterData.Types.ClearType.AccumCollectCurio, rewardCount);
+                }
+
+                var affected_cnt = await DBGameItemInfo.UpdateItems(connection, itemInfos);
+                if (affected_cnt <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthOpenCube ItemInfo DB Update Error UserIdx : {session.Actor.UserModel.UserIndex}");
+                    result = EResultType.OpenCubeDBUpdateFailed;
+                    break;
+                }
+
+                affected_cnt = await DBGameLabyrinthInfo.InsertOrUpdateLabyrinth(connection, getUserLabyrinth);
+                if (affected_cnt <= 0)
+                {
+                    Logger.ErrorLog($"OnCS_LabyrinthOpenCube LabyrinthInfo DB Update Error UserIdx : {session.Actor.UserModel.UserIndex}");
+                    result = EResultType.OpenCubeDBUpdateFailed;
+                    break;
+                }
+
+                session.Actor.LabyrinthModel.SetUserLabyrinth(getUserLabyrinth);
+                messagePack = SC_LabyrinthOpenCube.CreateSC_LabyrinthOpenCube(builder, getRewardId, rewardCount, getUserLabyrinth.useCubeBatteryCount);
+
+                List<ItemDataLog> useItemLogs = new List<ItemDataLog>();
+                List<ItemDataLog> addItemLogs = new List<ItemDataLog>();
+
+                foreach (var item in itemInfos)
+                {
+                    if (item.count > 0)
+                    {
+                        await RankingMission.UpdateRankingItemMission(connection, session.Actor.UserModel.UserIndex, RankingConditionType.GetItem, item.metaId, item.count, now);
+                        Archive.Send(Archive.LogItemId.LabyrinthRandomBoxReward, session.Actor.UserModel.UserIndex, item.metaId, item.count, 0, 0);
+                        var currentAmount = session.Actor.ItemModel.GetItem(item.metaId)?.count ?? 0;
+                        addItemLogs.Add(new ItemDataLog()
+                        {
+                            MetaId = item.metaId,
+                            AddCount = item.count,
+                            ResultCount = currentAmount + item.count,
+                        });
+                    }
+                    else
+                    {
+                        await RankingMission.UpdateRankingItemMission(connection, session.Actor.UserModel.UserIndex, RankingConditionType.SpendItem, item.metaId, -item.count, now);
+                        Archive.Send(Archive.LogItemId.UseLabyrinthRandomBox, session.Actor.UserModel.UserIndex, item.metaId, -item.count, 0, 0);
+                        useItemLogs.Add(new ItemDataLog()
+                        {
+                            MetaId = item.metaId,
+                            AddCount = item.count,
+                            ResultCount = session.Actor.ItemModel.GetItem(item.metaId).count + item.count,
+                        });
+                    }
+
+                    session.Actor.ItemModel.SetItem(item);
+                }
+
+                long refrenceLogId = Uniquekey.Get();
+                await SqsModel.GetInstance().SendLog<ItemLog>(new ItemLog()
+                {
+                    UserIdx = session.Actor.UserModel.UserIndex,
+                    ActionType = ActionType.LabyrinthOpenCube,
+                    LogType = LogType.Item,
+                    ItemLogDatas = useItemLogs,
+                    LogTime = now,
+                    RefrenceLogId = refrenceLogId,
+                });
+
+                await SqsModel.GetInstance().SendLog<ItemLog>(new ItemLog()
+                {
+                    UserIdx = session.Actor.UserModel.UserIndex,
+                    ActionType = ActionType.LabyrinthOpenCube,
+                    LogType = LogType.Item,
+                    ItemLogDatas = addItemLogs,
+                    LogTime = now,
+                    RefrenceLogId = refrenceLogId,
+                });
+
+                if (refreshEntryCount == true)
+                {
+                    var newBuilder = new FlatBufferBuilder(1);
+                    var offsetMessage = SC_RefreshLabyrinthEntryCount.CreateSC_RefreshLabyrinthEntryCount(newBuilder, getRefreshEnterCount);
+                    session.Send(newBuilder, EMessageType.SC_RefreshLabyrinthEntryCount, offsetMessage, result);
+                }
+                connection.Commit();
+            } while (false);
+        }
+        catch (Exception ex)
+        {
+            Logger.ErrorLog(ex);
+            result = EResultType.LogicError;
+        }
+
+        if (result != EResultType.Success)
+        {
+            connection.Rollback();
+        }
+
+        session.Send(builder, EMessageType.SC_LabyrinthOpenCube, messagePack, result);
+    }
+    #endregion
